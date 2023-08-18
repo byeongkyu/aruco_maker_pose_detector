@@ -28,8 +28,8 @@ class ArucoMakerPCLDetector: public rclcpp::Node
             pub_marker_pose_ = this->create_publisher<geometry_msgs::msg::PoseStamped>("marker_pose", 10);
 
             sub_color_image_.subscribe(this, "/camera/color/image_raw");
-            sub_depth_image_.subscribe(this, "/camera/depth/image_rect_raw");
-            sub_depth_camera_info_.subscribe(this, "/camera/depth/camera_info");
+            sub_depth_image_.subscribe(this, "/camera/aligned_depth_to_color/image_raw");
+            sub_depth_camera_info_.subscribe(this, "/camera/aligned_depth_to_color/camera_info");
 
             sync_ = std::make_shared<message_filters::TimeSynchronizer<sensor_msgs::msg::Image, sensor_msgs::msg::Image, sensor_msgs::msg::CameraInfo>>(
                             sub_color_image_, sub_depth_image_, sub_depth_camera_info_, 10);
@@ -61,7 +61,7 @@ class ArucoMakerPCLDetector: public rclcpp::Node
             std::vector<int> markerIds;
             std::vector<std::vector<cv::Point2f>> markerCorners, rejectedCandidates;
             cv::Ptr<cv::aruco::DetectorParameters> parameters = cv::aruco::DetectorParameters::create();
-            cv::Ptr<cv::aruco::Dictionary> dictionary = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_APRILTAG_36h11);
+            cv::Ptr<cv::aruco::Dictionary> dictionary = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_250);
             cv::aruco::detectMarkers(img_color->image, dictionary, markerCorners, markerIds, parameters, rejectedCandidates);
 
 
@@ -70,6 +70,16 @@ class ArucoMakerPCLDetector: public rclcpp::Node
                 RCLCPP_WARN(this->get_logger(), "No marker detected...");
                 return;
             }
+
+            double center_x = 0, center_y = 0;
+            for(size_t i = 0; i < markerCorners[0].size(); i++)
+            {
+                center_x += markerCorners[0][i].x;
+                center_y += markerCorners[0][i].y;
+            }
+            center_x = center_x / markerCorners[0].size();
+            center_y = center_y / markerCorners[0].size();
+            cv::circle(img_color->image, cv::Point2f(center_x, center_y), 10, cv::Scalar(255, 0, 0, 0), 1);
 
             std::vector<cv::Point3f> pts(4);
             for(size_t i = 0; i < markerCorners[0].size(); i++)
@@ -81,20 +91,20 @@ class ArucoMakerPCLDetector: public rclcpp::Node
                 uint16_t z = subpixel_patch.at<uint16_t>(0, 0);
 
                 pts[i].z = z / 1000.0;
-                pts[i].x = pts[i].z * ((pt.x - info->k[2]) / info->k[0]);
-                pts[i].y = pts[i].z * ((pt.y - info->k[5]) / info->k[4]);
+                pts[i].x = pts[i].z * (pt.x - info->k[2]) / info->k[0];
+                pts[i].y = pts[i].z * (pt.y - info->k[5]) / info->k[4];
 
-                // RCLCPP_WARN(this->get_logger(), "%f %f %f", pts[i].x, pts[i].y, pts[i].z);
+                RCLCPP_WARN(this->get_logger(), "%f %f %f", pts[i].x, pts[i].y, pts[i].z);
 
-                if(i == 0)
+                if(i == 1)
                 {
                     cv::circle(img_color->image, pt, 10, cv::Scalar(255, 0, 0, 0), 1);
                 }
             }
 
             // cv::aruco::drawDetectedMarkers(img_color->image, markerCorners, markerIds);
-            cv::imshow("Display window", img_color->image);
-            cv::waitKey(1);
+            // cv::imshow("Display window", img_color->image);
+            // cv::waitKey(1);
 
             /*
             pts[0] left top
@@ -105,28 +115,28 @@ class ArucoMakerPCLDetector: public rclcpp::Node
 
             // Get center point
             cv::Point3f center_pt(0.0, 0.0, 0.0);
-            for(size_t i = 0; i < pts.size(); i++)
-            {
-                center_pt.x += pts[i].x;
-                center_pt.y += pts[i].y;
-                center_pt.z += pts[i].z;
+            cv::Point2f pt_center(center_x, center_y);
 
-                RCLCPP_DEBUG(this->get_logger(), "pts[%d]: %f %f %f", (int)i, pts[i].x, pts[i].y, pts[i].z);
-            }
+            cv::Mat subpixel_patch2;
+            cv::remap(img_depth->image, subpixel_patch2, cv::Mat(1, 1, CV_32FC2, &pt_center), cv::noArray(), cv::INTER_LINEAR, cv::BORDER_REFLECT_101);
+            uint16_t z_center = subpixel_patch2.at<uint16_t>(0, 0);
 
-            center_pt.x /= (double)pts.size();
-            center_pt.y /= (double)pts.size();
-            center_pt.z /= (double)pts.size();
+            center_pt.z = z_center / 1000.0;
+            center_pt.x = center_pt.z * (pt_center.x - info->k[2]) / info->k[0];
+            center_pt.y = center_pt.z * (pt_center.y - info->k[5]) / info->k[4];
+
 
             // Pose estimation
-            double pitch1 = angles::normalize_angle(M_PI - atan2(pts[1].z - pts[0].z, pts[1].x - pts[0].x));
-            double pitch2 = angles::normalize_angle(M_PI - atan2(pts[2].z - pts[3].z, pts[2].x - pts[3].x));
+            double pitch1 = angles::normalize_angle(M_PI - atan2(pts[0].z - pts[1].z, pts[0].x - pts[1].x));
+            double pitch2 = angles::normalize_angle(M_PI - atan2(pts[3].z - pts[2].z, pts[3].x - pts[2].x));
 
-            double roll1 = angles::normalize_angle(M_PI + atan2(pts[2].z - pts[1].z, pts[2].y - pts[1].y));
-            double roll2 = angles::normalize_angle(M_PI + atan2(pts[3].z - pts[0].z, pts[3].y - pts[0].y));
+            double roll1 = angles::normalize_angle(M_PI - atan2(pts[2].z - pts[1].z, pts[2].y - pts[1].y));
+            double roll2 = angles::normalize_angle(M_PI - atan2(pts[3].z - pts[0].z, pts[3].y - pts[0].y));
 
             double yaw1 = angles::normalize_angle(M_PI + atan2(pts[1].y - pts[0].y, pts[1].x - pts[0].x));
             double yaw2 = angles::normalize_angle(M_PI + atan2(pts[2].y - pts[3].y, pts[2].x - pts[3].x));
+
+            // RCLCPP_WARN(this->get_logger(), "%f %f", pitch1, pitch2);
 
 
             // Publish result
@@ -146,7 +156,7 @@ class ArucoMakerPCLDetector: public rclcpp::Node
             q3.setRPY(0.0, 0.0, (yaw1 + yaw2) / 2.0);
 
             q_rot.setRPY(M_PI/2, -M_PI/2, 0);
-            q_new = q1 * q2 * q3 * q_rot; // rotate to original frame
+            q_new = q1;// * q2 * q3;// * q_rot; // rotate to original frame
             q_new.normalize();
 
             pose_msg.pose.orientation.x = q_new.getX();
