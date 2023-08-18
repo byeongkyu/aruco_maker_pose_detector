@@ -145,7 +145,7 @@ class ArucoMakerPCLDetector: public rclcpp::Node
             q2.setRPY((roll1 + roll2) / 2.0, 0.0, 0.0);
             q3.setRPY(0.0, 0.0, (yaw1 + yaw2) / 2.0);
 
-            q_rot.setRPY(M_PI, M_PI, 0);
+            q_rot.setRPY(M_PI/2, -M_PI/2, 0);
             q_new = q1 * q2 * q3 * q_rot; // rotate to original frame
             q_new.normalize();
 
